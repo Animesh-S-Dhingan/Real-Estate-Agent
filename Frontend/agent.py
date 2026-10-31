@@ -2,9 +2,17 @@
 Browser-side LangGraph Agent
 Runs inside Pyodide (WebAssembly) in the browser.
 Uses call_llm() function defined in worker.js to call backend API.
+
+This module works with either:
+1. Real langgraph (if installed successfully)
+2. Fallback mock implementation (if langgraph install fails)
 """
 
-from langgraph.graph import StateGraph, END
+try:
+    from langgraph.graph import StateGraph, END
+except ImportError:
+    # Fallback will be provided by worker.js if langgraph fails to install
+    pass
 
 
 def run_graph(user_input: str) -> str:
@@ -16,6 +24,8 @@ def run_graph(user_input: str) -> str:
     - decide node: Determines if LLM is needed
     - llm node: Calls backend /llm API via JS bridge
     """
+    from langgraph.graph import StateGraph, END
+    
     state = {"input": user_input, "result": "", "need_llm": False}
 
     graph = StateGraph(dict)

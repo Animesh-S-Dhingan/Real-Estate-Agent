@@ -1,60 +1,92 @@
-from fastapi import FastAPI
+"""EstateAI FastAPI application entrypoint."""
+
+from contextlib import asynccontextmanager
+from pathlib import Path
+
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
-import google.generativeai as genai
+from fastapi.responses import JSONResponse
+from fastapi.staticfiles import StaticFiles
 
-from app.schemas import PredictionRequest, PredictionResponse, PromptRequest, LLMResponse
-from app.agent import agent_executor
-from app.config import GOOGLE_API_KEY
+from app.api.v1 import api_router
+from app.core.config import get_settings
+from app.core.database import Base, SessionLocal, engine
+from app.core.errors import APIError, api_error_handler, error_body
+from app import models  # noqa: F401 — register models
 
-# Configure Gemini
-genai.configure(api_key=GOOGLE_API_KEY)
-gemini_model = genai.GenerativeModel("gemini-2.0-flash")
+settings = get_settings()
 
-app = FastAPI(title="Real Estate Prediction Agent")
 
-# Enable CORS for browser requests
+def _ensure_data_dir() -> None:
+    Path(settings.database_url.replace("sqlite:///", "")).parent.mkdir(parents=True, exist_ok=True)
+
+
+@asynccontextmanager
+async def lifespan(_: FastAPI):
+    _ensure_data_dir()
+    Base.metadata.create_all(bind=engine)
+    # Auto-seed if empty
+    from app.seed import seed_if_empty
+
+    db = SessionLocal()
+    try:
+        seed_if_empty(db)
+    finally:
+        db.close()
+    yield
+
+
+app = FastAPI(
+    title=settings.app_name,
+    version=settings.app_version,
+    description=(
+        "EstateAI — AI-powered property discovery, neighbourhood intelligence, "
+        "and investment analysis for Delhi NCR (FastAPI)."
+    ),
+    lifespan=lifespan,
+)
+
+origins = [o.strip() for o in settings.cors_origins.split(",")] if settings.cors_origins != "*" else ["*"]
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # In production, restrict to specific origins
+    allow_origins=origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
+app.add_exception_handler(APIError, api_error_handler)
+
+
+@app.exception_handler(Exception)
+async def unhandled_exception_handler(request: Request, exc: Exception):
+    body = error_body("INTERNAL_ERROR", "An unexpected error occurred.")
+    if settings.debug:
+        body["error"]["message"] = f"An unexpected error occurred: {exc}"
+    return JSONResponse(status_code=500, content=body)
+
+
+app.include_router(api_router, prefix=settings.api_prefix)
+
+# Also expose legacy top-level aliases used by older frontend workers
+from app.api.v1 import ai as ai_routes
+
+app.include_router(ai_routes.router, tags=["legacy"])
+
 
 @app.get("/")
-async def root():
-    return {"status": "ok", "message": "Real Estate Agent API is running"}
+def root():
+    return {
+        "status": "ok",
+        "product": settings.app_name,
+        "version": settings.app_version,
+        "docs": "/docs",
+        "api": settings.api_prefix,
+        "geography": "Delhi NCR",
+    }
 
 
-@app.post("/llm", response_model=LLMResponse)
-async def call_llm(req: PromptRequest):
-    """
-    Direct LLM endpoint for browser-based LangGraph agent.
-    Accepts a prompt and returns Gemini response.
-    """
-    try:
-        response = gemini_model.generate_content(req.prompt)
-        return LLMResponse(text=response.text)
-    except Exception as e:
-        error_msg = str(e)
-        # Handle specific error types
-        if "429" in error_msg or "quota" in error_msg.lower():
-            return LLMResponse(text=f"⚠️ API quota exceeded. Please try again later or check your billing settings.")
-        elif "404" in error_msg or "not found" in error_msg.lower():
-            return LLMResponse(text=f"⚠️ Model not available. Please check configuration.")
-        else:
-            return LLMResponse(text=f"⚠️ Error: {error_msg}")
-
-
-@app.post("/predict", response_model=PredictionResponse)
-def predict_price(request: PredictionRequest):
-    result = agent_executor.invoke({
-        "location": request.location,
-        "area_sqft": request.area_sqft
-    })
-
-    return PredictionResponse(
-        predicted_rate=result["predicted_rate"],
-        explanation=result["explanation"]
-    )
+# Serve frontend statically when present
+frontend_dir = Path(__file__).resolve().parents[1] / "Frontend"
+if frontend_dir.exists():
+    app.mount("/app", StaticFiles(directory=str(frontend_dir), html=True), name="frontend")

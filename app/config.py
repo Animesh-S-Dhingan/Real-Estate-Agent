@@ -1,17 +1,9 @@
-import os
-from dotenv import load_dotenv
+"""Backward-compatible config exports for legacy agent/tools modules."""
 
-load_dotenv()
+from app.core.config import get_settings
 
-GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY")
-GOOGLE_MAPS_API_KEY = os.getenv("GOOGLE_MAPS_API_KEY")
-NEWS_API_KEY = os.getenv("NEWS_API_KEY")
+_settings = get_settings()
 
-if not GOOGLE_API_KEY:
-    raise ValueError("GOOGLE_API_KEY is missing in .env")
-
-if not GOOGLE_MAPS_API_KEY:
-    raise ValueError("GOOGLE_MAPS_API_KEY is missing in .env")
-
-if not NEWS_API_KEY:
-    raise ValueError("NEWS_API_KEY is missing in .env")
+GOOGLE_API_KEY = _settings.google_api_key
+GOOGLE_MAPS_API_KEY = _settings.google_maps_api_key
+NEWS_API_KEY = _settings.news_api_key

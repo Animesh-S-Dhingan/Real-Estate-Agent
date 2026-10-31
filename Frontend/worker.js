@@ -13,16 +13,46 @@ async function initPyodide() {
         pyodide = await loadPyodide();
         console.log("✅ Pyodide initialized");
 
-        postStatus("Installing micropip...");
-        await pyodide.loadPackage(["micropip"]);
-        console.log("✅ micropip loaded");
+        // Preload Pyodide's built-in packages
+        postStatus("Loading core packages...");
+        await pyodide.loadPackage(["micropip", "ssl"]);
+        console.log("✅ Core packages loaded");
 
         postStatus("Installing LangGraph (this may take a moment)...");
+
+
+        // Create the call_llm function in Python and inject it into builtins
+        // This makes it accessible from any imported module
         await pyodide.runPythonAsync(`
-import micropip
-await micropip.install("langgraph")
+import builtins
+from js import XMLHttpRequest
+import json
+
+def _call_llm(prompt):
+    """
+    Call the backend LLM API via JavaScript XMLHttpRequest.
+    Uses synchronous request for compatibility with graph execution.
+    """
+    try:
+        xhr = XMLHttpRequest.new()
+        xhr.open("POST", "http://localhost:8000/llm", False)  # False = synchronous
+        xhr.setRequestHeader("Content-Type", "application/json")
+        xhr.send(json.dumps({"prompt": prompt}))
+        
+        if xhr.status == 200:
+            response = json.loads(xhr.responseText)
+            return response.get("text", "No response")
+        else:
+            return f"Error: HTTP {xhr.status}"
+    except Exception as e:
+        return f"Error calling LLM: {str(e)}"
+
+# Inject into builtins so it's globally available everywhere
+builtins.call_llm = _call_llm
+
+print("✅ call_llm function injected into builtins")
         `);
-        console.log("✅ LangGraph installed");
+        console.log("✅ call_llm function injected into builtins");
 
         // Fetch agent.py and write it to Pyodide's virtual filesystem
         postStatus("Loading agent module...");
@@ -34,54 +64,6 @@ await micropip.install("langgraph")
         pyodide.runPython(`
 import sys
 sys.path.insert(0, '/home/pyodide')
-        `);
-
-        // Expose async-compatible call_llm using Pyodide's fetch wrapper
-        // This JS function will be called from Python
-        const callLlmAsync = async (prompt) => {
-            const res = await fetch("http://localhost:8000/llm", {
-                method: "POST",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({ prompt: prompt })
-            });
-            const data = await res.json();
-            return data.text;
-        };
-
-        // Set the async function in Python globals
-        pyodide.globals.set("js_call_llm", callLlmAsync);
-        console.log("✅ js_call_llm function injected");
-
-        // Create a Python wrapper that properly handles the async JS call
-        await pyodide.runPythonAsync(`
-import js
-from pyodide.ffi import to_js
-
-# Wrapper that calls the JS function and awaits the promise
-def call_llm(prompt):
-    """
-    Call the backend LLM API via JavaScript.
-    Uses synchronous XMLHttpRequest for compatibility with LangGraph.
-    """
-    try:
-        # Use synchronous XMLHttpRequest via JavaScript
-        from js import XMLHttpRequest
-        xhr = XMLHttpRequest.new()
-        xhr.open("POST", "http://localhost:8000/llm", False)  # False = synchronous
-        xhr.setRequestHeader("Content-Type", "application/json")
-        
-        import json
-        xhr.send(json.dumps({"prompt": prompt}))
-        
-        if xhr.status == 200:
-            response = json.loads(xhr.responseText)
-            return response.get("text", "No response")
-        else:
-            return f"Error: HTTP {xhr.status}"
-    except Exception as e:
-        return f"Error calling LLM: {str(e)}"
-
-print("✅ call_llm wrapper created")
         `);
 
         // Import the agent module
