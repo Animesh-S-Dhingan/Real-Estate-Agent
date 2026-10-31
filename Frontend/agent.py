@@ -8,6 +8,9 @@ This module works with either:
 2. Fallback mock implementation (if langgraph install fails)
 """
 
+from app.api.v1.ai import call_llm
+
+
 try:
     from langgraph.graph import StateGraph, END
 except ImportError:
